@@ -2938,7 +2938,7 @@ def normalize_codex_permission_launch_args(
     args = list(terminal_launch_args or ())
     full_access = False
     has_permission_profile = False
-    has_reviewer = "--approve-for-me" in args
+    has_reviewer = False
     has_sandbox = False
     has_approval_policy = "--dangerously-bypass-approvals-and-sandbox" in args
     explicit_bypass = has_approval_policy
