@@ -6319,6 +6319,14 @@ def create_runner_app(
             _background_tasks.discard(task)
             if _stranded_wake_retry_task and _stranded_wake_retry_task[0] is task:
                 _stranded_wake_retry_task.clear()
+            # Surface an unexpected failure instead of a GC-time warning;
+            # recovery degrades to the next reconnect or explicit parent turn.
+            if not task.cancelled() and task.exception() is not None:
+                _logger.warning(
+                    "Stranded sub-agent wake retry loop failed: %r",
+                    task.exception(),
+                    extra={"session_id": runner_primary_session_id()},
+                )
 
         _retry_task.add_done_callback(_clear_retry_refs)
         _background_tasks.add(_retry_task)
