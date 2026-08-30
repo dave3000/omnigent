@@ -6264,7 +6264,9 @@ def create_runner_app(
         # Paced rounds: a failed re-attempt lands the parent back in
         # _stranded_wake_parents (see _post_subagent_wake_notice), so a later
         # round picks it up once the handshake has had more time. In-flight
-        # attempts are deduped by _subagent_wake_pending.
+        # attempts are deduped by _subagent_wake_pending. Recovery is bounded:
+        # a parent still failing after the last round stays stranded until the
+        # NEXT tunnel reconnect or an explicit parent turn re-attempts it.
         for delay_s in _STRANDED_WAKE_RETRY_DELAYS_S:
             await _wake_retry_sleep(delay_s)
             if not _stranded_wake_parents:
@@ -6307,7 +6309,13 @@ def create_runner_app(
             return
         _retry_task = loop.create_task(_retry_stranded_wakes_soon())
         _stranded_wake_retry_task[:] = [_retry_task]
-        _retry_task.add_done_callback(_background_tasks.discard)
+
+        def _clear_retry_refs(task: asyncio.Task[None]) -> None:
+            _background_tasks.discard(task)
+            if _stranded_wake_retry_task and _stranded_wake_retry_task[0] is task:
+                _stranded_wake_retry_task.clear()
+
+        _retry_task.add_done_callback(_clear_retry_refs)
         _background_tasks.add(_retry_task)
 
     def _mark_subagent_terminal_and_wake(
