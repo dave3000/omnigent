@@ -1428,6 +1428,75 @@ def _subagent_model_from_args(args: _JsonObject) -> str | None:
     return validate_model_override(raw_model)
 
 
+async def _inherited_parent_model(
+    *,
+    server_client: httpx.AsyncClient,
+    conversation_id: str,
+    sub_agent_name: str,
+    agent_spec: AgentSpec | None,
+    child_harness: str | None,
+) -> str | None:
+    """
+    Resolve the parent session's model for a dispatch that names none.
+
+    A user who selects a model for a session expects the whole session —
+    including the sub-agents it fans out to — to run on it; without
+    inheritance a dispatch that omits ``args.model`` silently lands on the
+    worker/provider default. Inheritance is best-effort and skips quietly
+    (unlike the explicit ``args.model`` path, which fails loud) because the
+    caller asked for nothing:
+
+    - a sub-agent spec that pins its own ``executor.model`` keeps it — the
+      worker's author chose that model deliberately;
+    - a child harness without model-override plumbing runs its default;
+    - a parent model outside the child harness's family (e.g. a Claude
+      selection dispatched to a codex worker) is not forced across vendors.
+
+    :param server_client: HTTP client pointed at the Omnigent server.
+    :param conversation_id: The parent session id.
+    :param sub_agent_name: Name of the sub-agent being dispatched.
+    :param agent_spec: Parent agent's spec.
+    :param child_harness: The child's resolved harness, e.g. ``"claude-sdk"``.
+    :returns: The parent's effective model to inherit, or ``None`` when
+        inheritance does not apply.
+    """
+    sub_spec = _find_subagent_spec(sub_agent_name, agent_spec)
+    spec_model = getattr(getattr(sub_spec, "executor", None), "model", None)
+    if isinstance(spec_model, str) and spec_model:
+        return None
+    if not harness_supports_model_override(child_harness):
+        return None
+    try:
+        resp = await server_client.get(f"/v1/sessions/{conversation_id}", timeout=10.0)
+    except (httpx.HTTPError, RuntimeError):
+        return None
+    if resp.status_code != 200:
+        return None
+    snap = _string_object_dict(resp.json())
+    if snap is None:
+        return None
+    # Effective selection: an explicit per-session override wins over the
+    # spec/CLI-resolved model; both may be absent.
+    raw_model = snap.get("model_override") or snap.get("llm_model")
+    if not isinstance(raw_model, str) or not raw_model:
+        return None
+    try:
+        parent_model = validate_model_override(raw_model)
+    except ValueError:
+        return None
+    if child_harness is not None and model_family_mismatch(child_harness, parent_model):
+        _logger.debug(
+            "sys_session_send: not inheriting parent model %r for sub-agent %r "
+            "(family mismatch with harness %s); child runs its default",
+            parent_model,
+            sub_agent_name,
+            child_harness,
+            extra={"session_id": runner_primary_session_id()},
+        )
+        return None
+    return parent_model
+
+
 def _subagent_reasoning_effort_from_args(args: _JsonObject) -> str | None:
     """
     Extract the optional ``reasoning_effort`` from
@@ -2296,6 +2365,26 @@ async def _execute_subagent_tool(
                 agent_spec=agent_spec,
                 harness=child_harness,
             )
+        else:
+            # No explicit per-dispatch model: inherit the parent session's
+            # selection so the user's chosen model governs the whole session
+            # tree. Best-effort — skipped when the sub-agent spec pins its
+            # own model, the harness has no override plumbing, or the parent
+            # model's family cannot run on the child harness.
+            inherited = await _inherited_parent_model(
+                server_client=server_client,
+                conversation_id=conversation_id,
+                sub_agent_name=str(sub_agent_name),
+                agent_spec=agent_spec,
+                child_harness=child_harness,
+            )
+            if inherited is not None:
+                create_body["model_override"] = _normalize_subagent_model(
+                    inherited,
+                    sub_agent_name=str(sub_agent_name),
+                    agent_spec=agent_spec,
+                    harness=child_harness,
+                )
         # A dispatch that names no effort inherits the sub-agent spec's
         # ``executor.reasoning_effort``, so a worker's default is declared
         # once in its config instead of depending on the orchestrator
