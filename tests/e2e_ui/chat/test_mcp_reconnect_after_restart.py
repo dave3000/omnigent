@@ -289,9 +289,7 @@ def test_mcp_tool_call_recovers_after_mcp_server_restart(
         # broken one). Never let expansion flake mask the real assertion.
         try:
             page.get_by_role("button", name=re.compile(r"^Worked")).last.click(timeout=5_000)
-            page.get_by_role("button", name=re.compile(r"Called 1 tool")).last.click(
-                timeout=5_000
-            )
+            page.get_by_role("button", name=re.compile(r"Called 1 tool")).last.click(timeout=5_000)
             page.wait_for_timeout(2_000)
         except Exception:
             pass
