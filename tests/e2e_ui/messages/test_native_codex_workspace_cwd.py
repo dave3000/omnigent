@@ -42,8 +42,8 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from tests.e2e_ui.conftest import (
-    _bind_session_runner,
     _CODEX_MOCK_MODEL,
+    _bind_session_runner,
     _ensure_runner_online,
     _server_state,
     _temp_omnigent_mock_config,
@@ -276,6 +276,6 @@ def test_codex_native_shell_runs_in_selected_workspace(
     # bridge state has no cwd, the executor falls back to the runner
     # process's working directory, and this locator never appears (the
     # widget shows the runner cwd instead).
-    expect(
-        page.locator(_ASSISTANT).get_by_text(str(workspace), exact=False).first
-    ).to_be_visible(timeout=15_000)
+    expect(page.locator(_ASSISTANT).get_by_text(str(workspace), exact=False).first).to_be_visible(
+        timeout=15_000
+    )
