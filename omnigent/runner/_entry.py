@@ -1391,12 +1391,26 @@ def create_app(
 
         with contextlib.suppress(Exception):
             await asyncio.to_thread(reconcile_codex_native_process_registry)
+        # Liveness backstop for sub-agent dispatches wedged in ``launching``:
+        # a child that never emits any edge would otherwise hold the parent's
+        # work handle open forever with no error surfaced.
+        from omnigent.runner.app import run_subagent_launch_reaper
+
+        app.state.subagent_launch_reaper = asyncio.create_task(
+            run_subagent_launch_reaper(),
+            name="runner-subagent-launch-reaper",
+        )
 
     async def _stop_pm() -> None:
         """Stop runner-owned resources for graceful process exit.
 
         :returns: None.
         """
+        _launch_reaper = getattr(app.state, "subagent_launch_reaper", None)
+        if _launch_reaper is not None:
+            _launch_reaper.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await _launch_reaper
         _pane_reaper = getattr(app.state, "native_pane_reaper", None)
         if _pane_reaper is not None:
             await _pane_reaper.shutdown()
