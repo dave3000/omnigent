@@ -6,6 +6,7 @@
 // instead of the homepage. Section links still close it.
 
 import { cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
+import { SettingsIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { MemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -65,6 +66,15 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("settingsNavGroups", () => {
+  it("starts general preferences with a General gear entry", () => {
+    const general = settingsNavGroups(false, false).find((group) => group.title === "General");
+    expect(general?.items[0]).toMatchObject({
+      id: "general",
+      label: "General",
+      icon: SettingsIcon,
+    });
+  });
+
   it("flags Keyboard shortcuts as hidden on mobile, but not the other items", () => {
     const items = settingsNavGroups(false, false).flatMap((g) => g.items);
     const shortcuts = items.find((i) => i.id === "shortcuts");
@@ -152,6 +162,7 @@ describe("SettingsSidebarBody", () => {
     expect(screen.getByTestId("settings-nav-appearance").querySelector("svg")).toHaveClass(
       "ui-icon",
     );
+    expect(screen.getByTestId("settings-nav-general")).toHaveAttribute("href", "/settings/general");
   });
 
   it("uses the shared row geometry with normal-weight labels", () => {
