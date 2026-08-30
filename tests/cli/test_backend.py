@@ -2186,7 +2186,7 @@ def test_databricks_preflight_expired_credential_routes_to_reauth_via_reprobe(
 ) -> None:
     """Without a pointer record, a credential-less re-probe classifies the edge.
 
-    Ambient ``~/.databrickscfg`` credentials (no ``omnigent login`` record)
+    Ambient workspace-CLI profile credentials (no ``omnigent login`` record)
     can also go stale; the bare re-probe surfaces the DatabricksRealm
     challenge the stale bearer masked, so the run still routes to reauth.
     """

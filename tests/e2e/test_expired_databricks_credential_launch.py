@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import json
 import os
-import socket
 import subprocess
 import sys
 import threading
@@ -156,12 +155,6 @@ class _DatabricksEdgeHandler(BaseHTTPRequestHandler):
         pass
 
 
-def _find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
 @pytest.fixture
 def databricks_edge() -> Iterator[str]:
     """Run the stub Databricks edge on a free loopback port.
@@ -169,8 +162,9 @@ def databricks_edge() -> Iterator[str]:
     :yields: The server URL, e.g. ``"http://127.0.0.1:8471"``.
     """
     _DatabricksEdgeHandler.requests_seen = []
-    port = _find_free_port()
-    server = ThreadingHTTPServer(("127.0.0.1", port), _DatabricksEdgeHandler)
+    # Port 0 lets the OS pick a free port; read it back off the bound server.
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _DatabricksEdgeHandler)
+    port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -235,7 +229,7 @@ def _launch_env(home: Path) -> dict[str, str]:
     :param home: The staged isolated home directory.
     :returns: Environment for the ``omnigent run`` subprocess.
     """
-    env = dict(os.environ)
+    env = os.environ.copy()
     for key in _ENV_TO_CLEAR:
         env.pop(key, None)
     env["HOME"] = str(home)
