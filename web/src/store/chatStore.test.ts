@@ -5465,7 +5465,12 @@ describe("chatStore — handleSessionEvent (session.* events)", () => {
           id: "resp_ok",
           status: "completed",
           model: "m",
-          usage: { inputTokens: 100_000, outputTokens: 5, totalTokens: 100_005, contextTokens: 100_000 },
+          usage: {
+            inputTokens: 100_000,
+            outputTokens: 5,
+            totalTokens: 100_005,
+            contextTokens: 100_000,
+          },
         },
       });
       expect(useChatStore.getState().tokensUsed).toBe(100_000);
@@ -5483,7 +5488,12 @@ describe("chatStore — handleSessionEvent (session.* events)", () => {
           id: "resp_fail",
           status: "failed",
           model: "m",
-          usage: { inputTokens: 100_000, outputTokens: 0, totalTokens: 100_000, contextTokens: 100_000 },
+          usage: {
+            inputTokens: 100_000,
+            outputTokens: 0,
+            totalTokens: 100_000,
+            contextTokens: 100_000,
+          },
           error: { code: "RuntimeError", message: "inner executor error: auth failed" },
         },
       });
