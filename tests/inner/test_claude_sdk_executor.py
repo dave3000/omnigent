@@ -4856,3 +4856,110 @@ async def test_enqueue_session_message_returns_false_without_queuing() -> None:
 
     assert result is False
     assert not query_called, "query() must not be called during enqueue"
+
+
+@pytest.mark.asyncio
+async def test_terminal_error_carries_observed_usage() -> None:
+    """A terminal-error turn still reports the usage it observed mid-turn.
+
+    A turn can fail AFTER the model call started — the stream dies and the
+    CLI's retries are rejected (auth failure), or the ``ResultMessage``
+    arrives with ``is_error=True``. The prompt size was already observed
+    from ``message_start``, and discarding it froze the context-occupancy
+    meter at the previous successful turn's value exactly when the session
+    was in trouble.
+
+    Regression guard: pre-fix the ``terminal_error`` path yielded
+    ``ExecutorError`` with no usage, so nothing downstream could update
+    the meter on a failed turn.
+    """
+    from unittest.mock import patch
+
+    from claude_agent_sdk.types import (
+        ClaudeAgentOptions as SDKClaudeAgentOptions,
+    )
+    from claude_agent_sdk.types import ResultMessage as SDKResultMessage
+    from claude_agent_sdk.types import StreamEvent as SDKStreamEvent
+
+    from omnigent.inner.claude_sdk_executor import ClaudeSDKExecutor
+    from omnigent.inner.executor import ExecutorError
+
+    class _Sentinel:
+        pass
+
+    # The model call opens (message_start carries the prompt usage), then the
+    # harness reports a terminal failure via ResultMessage(is_error=True).
+    message_start = SDKStreamEvent(
+        uuid="u1",
+        session_id="s1",
+        event={
+            "type": "message_start",
+            "message": {
+                "usage": {
+                    "input_tokens": 400,
+                    "cache_read_input_tokens": 99_000,
+                    "cache_creation_input_tokens": 600,
+                }
+            },
+        },
+    )
+    sdk_result = SDKResultMessage(
+        subtype="success",
+        session_id="s1",
+        result="authentication failed",
+        total_cost_usd=0.0,
+        duration_ms=10,
+        duration_api_ms=8,
+        is_error=True,
+        num_turns=1,
+        usage=None,
+    )
+
+    class _FakeSDK:
+        AssistantMessage = _Sentinel
+        UserMessage = _Sentinel
+        SystemMessage = _Sentinel
+        StreamEvent = SDKStreamEvent
+        ResultMessage = SDKResultMessage
+        ClaudeAgentOptions = SDKClaudeAgentOptions
+        messages = [message_start, sdk_result]
+
+        class ClaudeSDKClient:
+            def __init__(self, options):
+                self.options = options
+
+            async def connect(self):
+                return None
+
+            async def query(self, prompt, session_id="default"):
+                return None
+
+            async def receive_response(self):
+                for message in _FakeSDK.messages:
+                    yield message
+
+            async def disconnect(self):
+                return None
+
+    executor = ClaudeSDKExecutor()
+    with patch("omnigent.inner.claude_sdk_executor._ensure_sdk", return_value=_FakeSDK):
+        events = [
+            e
+            async for e in executor.run_turn(
+                [{"role": "user", "content": "hi"}],
+                [],
+                "",
+            )
+        ]
+
+    errors = [e for e in events if isinstance(e, ExecutorError)]
+    assert errors, "Expected an ExecutorError for the terminal failure"
+    usage = errors[0].usage
+    assert usage is not None, (
+        "ExecutorError.usage is None — the observed message_start usage was "
+        "discarded on the terminal-error path, so the context meter freezes."
+    )
+    # Window fill = input + cache_creation + cache_read from the last call.
+    assert usage["context_tokens"] == 100_000
+    # output_tokens is unknown on an incomplete turn — reported as 0.
+    assert usage["output_tokens"] == 0

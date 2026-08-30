@@ -698,6 +698,39 @@ _NO_SANDBOX_ENV = "OMNIGENT_CLAUDE_SDK_NO_SANDBOX"
 _CLAUDE_PATH_ENV = "OMNIGENT_CLAUDE_PATH"
 
 
+def _usage_from_observed_call(
+    last_call_usage: dict[str, Any] | None,  # type: ignore[explicit-any]
+    model: str | None,
+) -> dict[str, Any] | None:  # type: ignore[explicit-any]
+    """Synthesize turn usage from the last observed ``message_start`` call.
+
+    Used when a turn ends without ``ResultMessage`` usage (early stream
+    close, terminal error, executor exception): the per-call prompt size
+    from the most recent ``message_start`` is the best available window
+    fill, so the context-occupancy meter can still advance.
+
+    :param last_call_usage: The last ``message_start`` event's
+        ``message.usage`` dict, or ``None`` when no API call started.
+    :param model: Harness-reported model for cost pricing, e.g.
+        ``"claude-sonnet-4-20250514"``.
+    :returns: A usage dict shaped like ``TurnComplete.usage``
+        (``output_tokens`` reports 0 — unknown on an incomplete turn),
+        or ``None`` when nothing was observed.
+    """
+    if last_call_usage is None:
+        return None
+    ctx_in = last_call_usage.get("input_tokens") or 0
+    ctx_cc = last_call_usage.get("cache_creation_input_tokens") or 0
+    ctx_cr = last_call_usage.get("cache_read_input_tokens") or 0
+    return {
+        "input_tokens": ctx_in,
+        "output_tokens": 0,
+        "total_tokens": ctx_in,
+        "context_tokens": ctx_in + ctx_cc + ctx_cr,
+        "model": model,
+    }
+
+
 def _sandbox_disabled_by_env() -> bool:
     """``True`` when the diagnostic bypass env var is set to a truthy
     value. Emits a WARNING on activation so CI output unambiguously
@@ -2951,36 +2984,31 @@ class ClaudeSDKExecutor(Executor):
                     f"Claude SDK error: {exc}\n"
                     f"CLI stderr:\n{stderr_text}\n"
                     f"CLI system diagnostics:\n{diagnostics_text}"
-                )
+                ),
+                usage=turn_usage
+                if turn_usage is not None
+                else _usage_from_observed_call(last_call_usage, observed_model or model),
             )
             return
-        if terminal_error:
-            yield ExecutorError(message=terminal_error)
-            return
 
-        # A turn can finish the stream without ever yielding a
-        # ``ResultMessage`` — the CLI can close the stream early, or the
-        # turn can be cut short before its final usage is reported. In
-        # that case ``turn_usage`` is None and the context-occupancy
-        # meter freezes at the previous successful turn's value, hiding
-        # real window fill exactly when a session is in trouble (#1533).
-        # We already observed the latest prompt size from ``message_start``
-        # (``last_call_usage``), so synthesize a usage dict from it and let
-        # ``TurnComplete`` carry it. ``context_tokens`` (window fill) is the
-        # meaningful field here; ``output_tokens`` is unknown on an
-        # incomplete turn, so report 0 rather than guess. The full
-        # ``ResultMessage`` path above still wins whenever it runs.
-        if turn_usage is None and last_call_usage is not None:
-            ctx_in = last_call_usage.get("input_tokens") or 0
-            ctx_cc = last_call_usage.get("cache_creation_input_tokens") or 0
-            ctx_cr = last_call_usage.get("cache_read_input_tokens") or 0
-            turn_usage = {
-                "input_tokens": ctx_in,
-                "output_tokens": 0,
-                "total_tokens": ctx_in,
-                "context_tokens": ctx_in + ctx_cc + ctx_cr,
-                "model": observed_model or model,
-            }
+        # A turn can end without ``ResultMessage`` usage — the CLI can close
+        # the stream early, fail terminally (auth failure, rejected retries),
+        # or be cut short before its final usage is reported. In all of those
+        # cases ``turn_usage`` is None and the context-occupancy meter would
+        # freeze at the previous successful turn's value, hiding real window
+        # fill exactly when a session is in trouble. The latest prompt size
+        # was already observed from ``message_start`` (``last_call_usage``),
+        # so synthesize a usage dict from it — for the failure return below
+        # AND the completion path — and let the terminal event carry it.
+        # ``output_tokens`` is unknown on an incomplete turn, so it reports 0
+        # rather than guess. The full ``ResultMessage`` path above still wins
+        # whenever it runs.
+        if turn_usage is None:
+            turn_usage = _usage_from_observed_call(last_call_usage, observed_model or model)
+
+        if terminal_error:
+            yield ExecutorError(message=terminal_error, usage=turn_usage)
+            return
 
         # ── LLM_RESPONSE policy evaluation ───────────────────────
         # Evaluate after the stream completes but before TurnComplete

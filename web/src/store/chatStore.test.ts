@@ -5456,6 +5456,58 @@ describe("chatStore — handleSessionEvent (session.* events)", () => {
     });
   });
 
+  describe("response.completed / response.failed (context ring)", () => {
+    it("applies usage from a completed turn to tokensUsed", () => {
+      useChatStore.setState({ tokensUsed: 2_000 });
+      handleSessionEvent({
+        type: "response_completed",
+        response: {
+          id: "resp_ok",
+          status: "completed",
+          model: "m",
+          usage: { inputTokens: 100_000, outputTokens: 5, totalTokens: 100_005, contextTokens: 100_000 },
+        },
+      });
+      expect(useChatStore.getState().tokensUsed).toBe(100_000);
+    });
+
+    it("applies usage from a FAILED turn to tokensUsed (meter must not freeze)", () => {
+      // A turn that dies after the model call started still observed its
+      // prompt size; the failed terminal event carries it. Pre-fix only
+      // response_completed updated the ring, so a failed turn left it
+      // frozen at the previous successful turn's value.
+      useChatStore.setState({ tokensUsed: 2_000 });
+      handleSessionEvent({
+        type: "response_failed",
+        response: {
+          id: "resp_fail",
+          status: "failed",
+          model: "m",
+          usage: { inputTokens: 100_000, outputTokens: 0, totalTokens: 100_000, contextTokens: 100_000 },
+          error: { code: "RuntimeError", message: "inner executor error: auth failed" },
+        },
+      });
+      expect(useChatStore.getState().tokensUsed).toBe(100_000);
+    });
+
+    it("leaves tokensUsed alone when a failed turn carries no usage", () => {
+      // Executors that observed nothing before failing report usage: null —
+      // the ring keeps the previous turn's value rather than zeroing.
+      useChatStore.setState({ tokensUsed: 2_000 });
+      handleSessionEvent({
+        type: "response_failed",
+        response: {
+          id: "resp_fail2",
+          status: "failed",
+          model: "m",
+          usage: null,
+          error: { code: "RuntimeError", message: "boom" },
+        },
+      });
+      expect(useChatStore.getState().tokensUsed).toBe(2_000);
+    });
+  });
+
   describe("session.created", () => {
     it("is a no-op (sub-agent rendering is future work — R8)", () => {
       const before = useChatStore.getState();

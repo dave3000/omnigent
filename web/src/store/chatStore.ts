@@ -5153,11 +5153,17 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
 
   switch (event.type) {
     case "response_completed":
+    case "response_failed":
       // Prefer contextTokens (last sub-call total) for the context ring — on
       // tool-call turns, totalTokens is the billing sum across all sub-calls
       // which inflates the ring. contextTokens is set only by multi-sub-call
       // executors (e.g. openai-agents); for all others it is null and we fall
       // back to totalTokens, which equals contextTokens for single-call turns.
+      // A FAILED turn carries the usage the harness observed before dying
+      // (e.g. the prompt size from an aborted model call): apply it the same
+      // way, so the ring reflects real window fill instead of freezing at the
+      // previous successful turn's value. Executors that report nothing on
+      // failure leave usage null, which no-ops here.
       if (event.response.usage != null) {
         const ringTokens = event.response.usage.contextTokens ?? event.response.usage.totalTokens;
         if (ringTokens != null) {
