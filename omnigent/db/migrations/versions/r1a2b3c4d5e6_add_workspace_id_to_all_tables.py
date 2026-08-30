@@ -95,10 +95,11 @@ def _detach_fks_bound_to_widened_pks(tables: Sequence[str]) -> list[tuple[str, s
                 "    FROM unnest(con.confkey) WITH ORDINALITY AS ord(attnum, n)"
                 "    JOIN pg_attribute att ON att.attrelid = con.confrelid"
                 "     AND att.attnum = ord.attnum) AS ref_cols,"
+                " array_to_string(con.confkey, ',') AS ref_cols_key,"
                 " (SELECT string_agg(att.attname, '_' ORDER BY ord.n)"
                 "    FROM unnest(con.confkey) WITH ORDINALITY AS ord(attnum, n)"
                 "    JOIN pg_attribute att ON att.attrelid = con.confrelid"
-                "     AND att.attnum = ord.attnum) AS ref_cols_key"
+                "     AND att.attnum = ord.attnum) AS ref_cols_label"
                 " FROM pg_constraint con"
                 " JOIN pg_class ref ON ref.oid = con.confrelid"
                 " JOIN pg_namespace nsp ON nsp.oid = ref.relnamespace"
@@ -114,10 +115,12 @@ def _detach_fks_bound_to_widened_pks(tables: Sequence[str]) -> list[tuple[str, s
     )
     # One parallel UNIQUE per distinct referenced column set, unless an
     # equivalent unique constraint already exists on those exact columns.
-    needed: dict[tuple[str, str], str] = {}
+    # The dedup key is the ordered attnum list, which — unlike joined column
+    # names — cannot alias two distinct column sets.
+    needed: dict[tuple[str, str], tuple[str, str]] = {}
     for fk in fks:
-        needed[(fk["parent"], fk["ref_cols_key"])] = fk["ref_cols"]
-    for (parent, cols_key), ref_cols in needed.items():
+        needed[(fk["parent"], fk["ref_cols_key"])] = (fk["ref_cols"], fk["ref_cols_label"])
+    for (parent, cols_key), (ref_cols, cols_label) in needed.items():
         existing = bind.execute(
             sa.text(
                 "SELECT 1 FROM pg_constraint u"
@@ -126,20 +129,26 @@ def _detach_fks_bound_to_widened_pks(tables: Sequence[str]) -> list[tuple[str, s
                 " WHERE u.contype = 'u'"
                 " AND nsp.nspname = current_schema()"
                 " AND rel.relname = :parent"
-                " AND (SELECT string_agg(att.attname, '_' ORDER BY ord.n)"
-                "        FROM unnest(u.conkey) WITH ORDINALITY AS ord(attnum, n)"
-                "        JOIN pg_attribute att ON att.attrelid = u.conrelid"
-                "         AND att.attnum = ord.attnum)"
-                " = :cols_key"
+                " AND array_to_string(u.conkey, ',') = :cols_key"
             ),
             {"parent": parent, "cols_key": cols_key},
         ).first()
         if existing is None:
-            # Stay under PostgreSQL's 63-byte identifier limit: a long
-            # table/column combination would otherwise truncate silently.
-            uq_name = f"uq_{parent}_{cols_key}"
-            if len(uq_name) > 63:
-                digest = hashlib.sha256(uq_name.encode()).hexdigest()[:10]
+            # Stay under PostgreSQL's 63-byte identifier limit, and fall back
+            # to a digest when the readable name is taken (two distinct column
+            # sets can share an underscore-joined label).
+            uq_name = f"uq_{parent}_{cols_label}"
+            taken = bind.execute(
+                sa.text(
+                    "SELECT 1 FROM pg_constraint c"
+                    " JOIN pg_class rel ON rel.oid = c.conrelid"
+                    " JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace"
+                    " WHERE nsp.nspname = current_schema() AND c.conname = :name"
+                ),
+                {"name": uq_name},
+            ).first()
+            if len(uq_name) > 63 or taken is not None:
+                digest = hashlib.sha256(f"{parent}:{cols_key}".encode()).hexdigest()[:10]
                 uq_name = f"uq_{parent[:44]}_{digest}"
             op.execute(
                 sa.text(f'ALTER TABLE "{parent}" ADD CONSTRAINT "{uq_name}" UNIQUE ({ref_cols})')

@@ -215,7 +215,7 @@ def test_widening_preserves_every_surviving_fk_shape(pg_scratch_uri: str) -> Non
                 sa.text(
                     "CREATE TABLE api_keys ("
                     " key_id INTEGER PRIMARY KEY,"
-                    " owner VARCHAR(128) NOT NULL,"
+                    " owner VARCHAR(128),"
                     " CONSTRAINT custom_owner_ref FOREIGN KEY (owner)"
                     "  REFERENCES users(id) ON DELETE SET NULL)"
                 )
