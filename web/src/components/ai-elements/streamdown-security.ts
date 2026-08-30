@@ -118,8 +118,10 @@ function fileUriToLocalPath(href: string): string | null {
     return null;
   }
   // The decoded path becomes an href: `//…` would read as a protocol-relative
-  // URL, and a literal `?`/`#` would split it. Leave those blocked.
-  if (!path.startsWith("/") || path.startsWith("//") || /[?#]/.test(path)) return null;
+  // URL, and a literal `?`/`#` would split it. A bare `/` names no file.
+  if (!path.startsWith("/") || path.startsWith("//") || path === "/" || /[?#]/.test(path)) {
+    return null;
+  }
   return path;
 }
 
@@ -181,12 +183,14 @@ function isHardenOptions(value: unknown): value is StreamdownHardenOptions {
 
 function createStreamdownRehypePlugins(markFileLinks: boolean): StreamdownRehypePlugins {
   const plugins: StreamdownRehypePlugins = [];
+  let sawSanitize = false;
 
   for (const [key, plugin] of Object.entries(defaultRehypePlugins)) {
     // Before sanitize, which would strip a `file:` href (not in its protocol
     // allowlist) with nothing left to hand to the marking pass below.
-    if (key === "sanitize" && markFileLinks) {
-      plugins.push(rewriteFileUriLinks);
+    if (key === "sanitize") {
+      sawSanitize = true;
+      if (markFileLinks) plugins.push(rewriteFileUriLinks);
     }
 
     if (key !== "harden") {
@@ -209,6 +213,12 @@ function createStreamdownRehypePlugins(markFileLinks: boolean): StreamdownRehype
       plugin[0],
       { ...plugin[1], allowedImagePrefixes: [] },
     ] satisfies StreamdownPluginTuple);
+  }
+
+  // Fail loud (like the harden tuple check above) rather than silently ship a
+  // pipeline where `file://` links regress to " [blocked]" spans.
+  if (markFileLinks && !sawSanitize) {
+    throw new Error("Streamdown default rehype plugins carry no sanitize step");
   }
 
   return plugins;

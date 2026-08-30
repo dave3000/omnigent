@@ -61,6 +61,7 @@ describe("rewriteFileUriLinks", () => {
     ["file:///tmp/a%3Fb.md", "decoded ? would split the rewritten href"],
     ["file:///tmp/a%23b.md", "decoded # would split the rewritten href"],
     ["file:///tmp/%E0%A4%A.md", "undecodable percent-escape"],
+    ["file:///", "bare root names no file"],
   ])("leaves %s for sanitize to strip (%s)", (href) => {
     expect(rewriteHref(href)).toEqual({ href });
   });
