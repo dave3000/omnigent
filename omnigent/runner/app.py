@@ -6283,9 +6283,9 @@ def create_runner_app(
                     continue
                 latest = max(
                     entries,
-                    key=lambda entry: entry.completed_at
-                    if entry.completed_at is not None
-                    else 0.0,
+                    key=lambda entry: (
+                        entry.completed_at if entry.completed_at is not None else 0.0
+                    ),
                 )
                 _logger.info(
                     "Re-attempting stranded sub-agent wake for parent=%s after reconnect",
