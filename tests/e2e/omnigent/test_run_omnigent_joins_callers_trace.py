@@ -282,6 +282,17 @@ def test_run_omnigent_joins_dispatching_clients_trace(
             f"server boundary.\nLargest omnigent traces:\n"
             f"{_summarize_traces(spans)}"
         )
+        # The join must reach the far end of the chain: the harness's
+        # agent-turn span, not merely a server-side span. A regression
+        # that dropped only the runner->harness env hop would otherwise
+        # slip through on a server span alone.
+        harness_joined = [s for s in joined if s["service"] == "omni-harness"]
+        assert harness_joined, (
+            f"spans joined the caller's trace, but none from the harness "
+            f"process - the dispatch context was lost on the "
+            f"runner->harness hop.\njoined spans: "
+            f"{[(s['service'], s['name']) for s in joined][:10]}"
+        )
     finally:
         collector.close()
 
@@ -341,6 +352,15 @@ def test_daemon_backed_run_keeps_response_derived_traces(
             f"test to assert joining, and delete the scrub) or the daemon "
             f"env scrub regressed in a way that lets a REUSED daemon "
             f"replay a stale dispatch's caller context."
+        )
+        # Positive half of the fallback: the run still produced its
+        # agent-turn span on an omnigent-derived trace - telemetry did
+        # not go dark, it just kept its own trace ids.
+        turn_spans = [s for s in spans if s["name"].startswith("agent:")]
+        assert turn_spans, (
+            f"daemon-backed run exported spans but no agent-turn span; "
+            f"the response-derived fallback trace was not produced.\n"
+            f"Largest traces:\n{_summarize_traces(spans)}"
         )
     finally:
         collector.close()

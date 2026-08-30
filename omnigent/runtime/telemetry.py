@@ -599,8 +599,10 @@ def dispatching_client_context() -> Context | None:
     :returns: The extracted :class:`~opentelemetry.context.Context` when
         this dispatch carries a valid, sampled caller ``TRACEPARENT``,
         else ``None`` — unset, malformed, or unsampled contexts fall back
-        to the response-derived trace. (An unsampled caller context would
-        make the default ``ParentBased`` sampler drop every omnigent
+        to the response-derived trace. "Malformed" refers to the
+        traceparent; an invalid ``TRACESTATE`` is dropped by the
+        propagator while the parent is kept. (An unsampled caller context
+        would make the default ``ParentBased`` sampler drop every omnigent
         span; the operator opted into telemetry, so keep exporting on
         omnigent's own trace instead of going dark.)
     """
