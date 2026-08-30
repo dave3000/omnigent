@@ -309,6 +309,38 @@ def test_run_dispatch_blesses_ambient_traceparent(
     assert os.environ[telemetry.DISPATCH_TRACESTATE_ENV_VAR] == "vendor=abc"
 
 
+def test_dispatch_capture_clears_stale_vars_without_ambient_traceparent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    With no ambient ``TRACEPARENT``, capture must clear any *inherited*
+    dispatch vars — a nested run must not extract a parent dispatch's
+    stale caller context.
+    """
+    monkeypatch.delenv("TRACEPARENT", raising=False)
+    monkeypatch.delenv("TRACESTATE", raising=False)
+    monkeypatch.setenv(telemetry.DISPATCH_TRACEPARENT_ENV_VAR, _CALLER_TRACEPARENT)
+    monkeypatch.setenv(telemetry.DISPATCH_TRACESTATE_ENV_VAR, "vendor=abc")
+    telemetry.capture_dispatch_trace_context()
+    assert telemetry.DISPATCH_TRACEPARENT_ENV_VAR not in os.environ
+    assert telemetry.DISPATCH_TRACESTATE_ENV_VAR not in os.environ
+
+
+def test_dispatch_capture_overwrites_inherited_tracestate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    With an ambient ``TRACEPARENT`` but no ``TRACESTATE``, an inherited
+    dispatch tracestate must not survive alongside the fresh traceparent.
+    """
+    monkeypatch.setenv("TRACEPARENT", _CALLER_TRACEPARENT)
+    monkeypatch.delenv("TRACESTATE", raising=False)
+    monkeypatch.setenv(telemetry.DISPATCH_TRACESTATE_ENV_VAR, "vendor=stale")
+    telemetry.capture_dispatch_trace_context()
+    assert os.environ[telemetry.DISPATCH_TRACEPARENT_ENV_VAR] == _CALLER_TRACEPARENT
+    assert telemetry.DISPATCH_TRACESTATE_ENV_VAR not in os.environ
+
+
 def test_ambient_traceparent_alone_is_not_extracted(
     in_memory_exporter: InMemorySpanExporter,
     monkeypatch: pytest.MonkeyPatch,

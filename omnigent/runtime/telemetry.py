@@ -569,8 +569,12 @@ def capture_dispatch_trace_context() -> None:
     — a deliberate safe trade-off until the caller context travels
     per-dispatch on the frame layer.
 
-    No-op when ``TRACEPARENT`` is unset or blank.
+    Clears any inherited dispatch vars first, so only the ambient
+    ``TRACEPARENT`` of *this* dispatch — never a stale value from a parent
+    process — can propagate.
     """
+    os.environ.pop(DISPATCH_TRACEPARENT_ENV_VAR, None)
+    os.environ.pop(DISPATCH_TRACESTATE_ENV_VAR, None)
     traceparent = os.environ.get("TRACEPARENT", "").strip()
     if not traceparent:
         return
