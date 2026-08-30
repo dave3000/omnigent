@@ -69,22 +69,17 @@ _STRIPPED_ENV_VARS = (
     "HTTPS_PROXY",
     "ALL_PROXY",
     "all_proxy",
-    "OMNIGENT_RUNNER_ID",
-    "OMNIGENT_RUNNER_TUNNEL_BINDING_TOKEN",
-    "OMNIGENT_RUNNER_TUNNEL_TOKEN",
-    "OMNIGENT_RUNNER_PARENT_PID",
-    "OMNIGENT_RUNNER_ISOLATE_SESSION",
-    "OMNIGENT_RUNNER_WORKSPACE",
-    "OMNIGENT_HOST_ID",
-    "OMNIGENT_HOST_TOKEN",
-    "OMNIGENT_HOST_NAME",
     "RUNNER_SERVER_URL",
-    "OMNIGENT_REMOTE_AUTH_TOKEN",
-    "OMNIGENT_REMOTE_AUTH_TOKEN_FILE",
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_BASE_URL",
-    "DATABRICKS_TOKEN",
-    "DATABRICKS_HOST",
+)
+# Whole families stripped by prefix: runner/host identity and provider
+# credentials leaked from the parent process would mis-route or
+# de-hermeticize the spawned server / daemons / CLI.
+_STRIPPED_ENV_PREFIXES = (
+    "OMNIGENT_RUNNER_",
+    "OMNIGENT_HOST_",
+    "OMNIGENT_REMOTE_AUTH_",
+    "ANTHROPIC_",
+    "DATABRICKS_",
 )
 
 
@@ -98,7 +93,7 @@ def _subprocess_env(home: Path | None = None) -> dict[str, str]:
     env = {
         k: v
         for k, v in os.environ.items()
-        if k not in _STRIPPED_ENV_VARS and not k.startswith("OMNIGENT_RUNNER_ZYGOTE")
+        if k not in _STRIPPED_ENV_VARS and not k.startswith(_STRIPPED_ENV_PREFIXES)
     }
     env["NO_PROXY"] = "127.0.0.1,localhost"
     env["no_proxy"] = "127.0.0.1,localhost"
