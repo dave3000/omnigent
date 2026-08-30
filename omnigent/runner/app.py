@@ -437,8 +437,10 @@ _WAKE_POST_RETRY_MAX_DELAY_S = 4.0
 # The reconnect callback fires BEFORE the new tunnel connection is established,
 # and the server 503s an injected parent event while the parent's runner is
 # still offline — so pace the rounds to outlast a slow handshake instead of
-# spending the bounded per-POST retries against a not-yet-open tunnel.
-_STRANDED_WAKE_RETRY_DELAYS_S = (2.0, 5.0, 10.0)
+# spending the bounded per-POST retries against a not-yet-open tunnel. The
+# final long round covers a server that is reachable but slow to become ready;
+# rounds cost nothing once no parent is stranded (the loop exits early).
+_STRANDED_WAKE_RETRY_DELAYS_S = (2.0, 5.0, 10.0, 30.0)
 # 4xx statuses that are transient and worth retrying (mirrors the forwarder's
 # classification): everything else in 4xx is a permanent client-side rejection.
 _WAKE_POST_TRANSIENT_4XX = frozenset({408, 409, 425, 429})
@@ -6290,6 +6292,9 @@ def create_runner_app(
                     parent_id,
                     extra={"session_id": runner_primary_session_id()},
                 )
+                # Deliberately not is_rewake=True: skip the _last_rewake_notice
+                # dedup so the notice always re-sends after a reconnect; the
+                # drained-inbox check above prevents true duplicates.
                 _schedule_subagent_wake(latest)
 
     def _retry_stranded_wakes() -> None:
