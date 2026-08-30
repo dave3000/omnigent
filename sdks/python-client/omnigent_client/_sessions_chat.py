@@ -260,6 +260,7 @@ class _StreamHookState:
     spawned_child_ids: set[str] = field(default_factory=set)
     completed_child_ids: set[str] = field(default_factory=set)
     child_agent_names: dict[str, str] = field(default_factory=dict)
+    child_previews: dict[str, str] = field(default_factory=dict)
 
 
 class SessionsChat:
@@ -984,6 +985,11 @@ class SessionsChat:
         raw_name = child.get("tool") or child.get("agent_name")
         if isinstance(raw_name, str) and raw_name:
             state.child_agent_names[child_id] = raw_name
+        # Deltas are partial: a preview may arrive in a separate delta from
+        # the terminal status, so remember the last one seen per child.
+        raw_preview = child.get("last_message_preview")
+        if isinstance(raw_preview, str) and raw_preview:
+            state.child_previews[child_id] = raw_preview
         if child_id not in state.spawned_child_ids or child_id in state.completed_child_ids:
             return
         status = child.get("current_task_status")
@@ -994,14 +1000,13 @@ class SessionsChat:
         if child_summary_busy(child):
             return
         state.completed_child_ids.add(child_id)
-        preview = child.get("last_message_preview")
         await _call_hook(
             self._hooks.on_sub_agent_completed,
             SubAgentCompletedCtx(
                 response_id=child_id,
                 agent_name=state.child_agent_names.get(child_id, ""),
                 status=status,
-                output_summary=preview if isinstance(preview, str) else None,
+                output_summary=state.child_previews.get(child_id),
             ),
         )
 

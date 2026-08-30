@@ -2021,3 +2021,26 @@ async def test_sub_agent_completed_skips_busy_and_non_terminal_updates() -> None
 
     assert len(spawned) == 1
     assert completed == []
+
+
+@pytest.mark.asyncio
+async def test_sub_agent_completed_uses_preview_from_earlier_delta() -> None:
+    """
+    Child deltas are partial: the preview may arrive in a separate delta
+    from the terminal status. Completion must carry the last preview seen
+    for the child, not just one riding the terminal delta itself.
+    """
+    spawned, completed = await _run_turn_with_subagent_hooks(
+        [
+            _created_event(),
+            _child_created_event(),
+            _child_updated_event(busy=True, status="in_progress", preview="partial answer"),
+            _child_updated_event(status="completed"),
+            _completed_event(),
+        ]
+    )
+
+    assert len(spawned) == 1
+    assert [(c.response_id, c.status, c.output_summary) for c in completed] == [
+        ("conv_child_1", "completed", "partial answer")
+    ]

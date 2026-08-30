@@ -178,7 +178,11 @@ class SubAgentInfo:
 
 @dataclass
 class SubAgentSpawnedCtx:
-    """Context for ``on_sub_agent_spawned``."""
+    """Context for ``on_sub_agent_spawned``.
+
+    Fires for the session's DIRECT children only: a grandchild's spawn
+    event rides the child's own stream, not this session's.
+    """
 
     parent_response_id: str
     sub_agents: list[SubAgentInfo] = field(default_factory=list)
@@ -192,6 +196,11 @@ class SubAgentCompletedCtx:
     status delta has carried one — richer than the raw agent id the spawn
     callback sees. Correlate with the spawn callback by ``response_id``
     (the child session id), not by name.
+
+    Reliable pairing needs a long-lived ``stream()`` subscription: a
+    ``send()`` call closes its stream when its own turn ends, and a child
+    typically completes in a later auto-wake continuation turn, so
+    ``send()`` consumers may see the spawn but miss this completion.
     """
 
     response_id: str
