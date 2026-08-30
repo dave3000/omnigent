@@ -1223,10 +1223,7 @@ def create_hosts_router(
             )
         # Absolute or tilde-prefixed only — the host needs a path it can
         # resolve on its own; a relative path has no stable meaning here.
-        if not (
-            path.startswith(("/", "~", "\\\\"))
-            or _is_windows_absolute_path(path)
-        ):
+        if not (path.startswith(("/", "~", "\\\\")) or _is_windows_absolute_path(path)):
             raise HTTPException(
                 status_code=400,
                 detail="path must be absolute or tilde-prefixed",
