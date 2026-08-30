@@ -271,6 +271,16 @@ def databricks_bearer_token_command(
     When the caller knows a token command that already worked (the one ucode
     recorded, say), it runs last, once the named profile has yielded nothing.
 
+    **Ambient bearer.** ``DATABRICKS_BEARER`` may be a deliberate injection (a
+    CI/runner that already resolved a token for a profile that cannot mint
+    one) or a stale export lingering in the user's shell — the env var cannot
+    say which. So the configured profile is consulted first and the bearer
+    only backstops a profile that yields no token: a working ``auth login``
+    always wins over a possibly-dead ambient credential, while an injected
+    bearer still carries a mint-less environment. That first mint is bounded
+    (``--timeout``) and quiet, so a profile with no usable OAuth state fails
+    fast to the bearer instead of hanging on the CLI's interactive acquire.
+
     :param host: Databricks workspace host, e.g.
         ``"https://example.databricks.com"``.
     :param profile: ``~/.databrickscfg`` profile name, e.g. ``"oss"``, or
@@ -291,9 +301,13 @@ def databricks_bearer_token_command(
         else ""
     )
     return (
-        # An injected bearer wins: the runner already resolved one.
+        # An ambient bearer may be injected or stale: prefer a bounded,
+        # quiet profile mint, and use the bearer only when it yields nothing.
         'if [ -n "${DATABRICKS_BEARER:-}" ]; then '
-        'printf "%s\\n" "$DATABRICKS_BEARER"; '
+        f"token=$({mint} --timeout 15s --output json 2>/dev/null "
+        "| jq -r '.access_token // empty'); "
+        'if [ -z "$token" ]; then token="$DATABRICKS_BEARER"; fi; '
+        'printf "%s\\n" "$token"; '
         "else token=''; "
         "if databricks auth token --help 2>&1 | grep -q force-refresh; then "
         f"token=$({mint} --force-refresh --output json 2>/dev/null "
