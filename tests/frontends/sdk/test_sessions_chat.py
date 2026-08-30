@@ -2034,7 +2034,7 @@ async def test_sub_agent_completed_uses_preview_from_earlier_delta() -> None:
         [
             _created_event(),
             _child_created_event(),
-            _child_updated_event(busy=True, status="in_progress", preview="partial answer"),
+            _child_updated_event(busy=False, status="in_progress", preview="partial answer"),
             _child_updated_event(status="completed"),
             _completed_event(),
         ]
@@ -2044,3 +2044,30 @@ async def test_sub_agent_completed_uses_preview_from_earlier_delta() -> None:
     assert [(c.response_id, c.status, c.output_summary) for c in completed] == [
         ("conv_child_1", "completed", "partial answer")
     ]
+
+
+@pytest.mark.asyncio
+async def test_sub_agent_spawned_ignores_other_parents_children() -> None:
+    """
+    A relayed ``session.created`` whose ``parent_session_id`` is another
+    session (e.g. a grandchild spawn) must not fire the spawn hook — the
+    hook announces this session's direct children only.
+    """
+    grandchild = SessionCreatedEvent(
+        type="session.created",
+        conversation_id="conv_abc",
+        child_session_id="conv_grandchild",
+        agent_id="ag_grandchild",
+        parent_session_id="conv_child_1",
+    )
+    spawned, completed = await _run_turn_with_subagent_hooks(
+        [
+            _created_event(),
+            grandchild,
+            _child_updated_event(child_id="conv_grandchild", status="completed"),
+            _completed_event(),
+        ]
+    )
+
+    assert spawned == []
+    assert completed == []

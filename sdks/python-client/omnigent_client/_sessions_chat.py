@@ -946,6 +946,11 @@ class SessionsChat:
         child_id = event.child_session_id
         if not child_id or child_id in state.spawned_child_ids:
             return
+        # Only announce children of THIS session: a relayed grandchild spawn
+        # would otherwise fire with the wrong parent_response_id.
+        parent_id = event.parent_session_id
+        if parent_id and parent_id != self._session.id:
+            return
         state.spawned_child_ids.add(child_id)
         agent_name = state.child_agent_names.get(child_id) or (event.agent_id or "")
         await _call_hook(
