@@ -60,7 +60,7 @@ from omnigent.server.schemas import (
     SessionStatusEvent,
 )
 
-from ._child_status import TERMINAL_TASK_STATUSES
+from ._child_status import TERMINAL_TASK_STATUSES, child_summary_busy
 from ._errors import OmnigentError
 from ._files import FilesNamespace
 from ._query import QueryResult, QueryStream
@@ -969,6 +969,13 @@ class SessionsChat:
         keeping spawn/complete callbacks paired and never re-announcing
         pre-existing children from the connect snapshot — and only once,
         on the first terminal (non-busy) status delta.
+
+        Spawn and completion must be observed by the same subscription:
+        ``stream()`` keeps one hook state for its whole lifetime, while each
+        ``send()`` turn starts fresh. A child that completes in a later
+        turn's continuation (e.g. an auto-wake) fires completion only for a
+        long-lived ``stream()`` consumer — the reliable path for adapters
+        that need paired spawn/complete spans.
         """
         child_id = event.child_session_id
         if not child_id:
@@ -980,9 +987,11 @@ class SessionsChat:
         if child_id not in state.spawned_child_ids or child_id in state.completed_child_ids:
             return
         status = child.get("current_task_status")
-        if child.get("busy") or not isinstance(status, str):
+        if not isinstance(status, str) or status not in TERMINAL_TASK_STATUSES:
             return
-        if status not in TERMINAL_TASK_STATUSES:
+        # Shared busy predicate (web/CLI semantics): a terminal status with a
+        # still-set busy flag or pending elicitation has not settled yet.
+        if child_summary_busy(child):
             return
         state.completed_child_ids.add(child_id)
         preview = child.get("last_message_preview")

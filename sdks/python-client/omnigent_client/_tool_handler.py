@@ -163,7 +163,14 @@ class TransportErrorCtx:
 
 @dataclass
 class SubAgentInfo:
-    """Info about a single spawned sub-agent."""
+    """Info about a single spawned sub-agent.
+
+    ``agent_name`` is the best identifier available at spawn time: the
+    spawn event carries only the child's agent id (e.g. ``ag_abc123``),
+    so that is what spawn-side callbacks receive. Correlate spawn and
+    completion callbacks by ``response_id`` (the child session id),
+    which is identical on both.
+    """
 
     response_id: str
     agent_name: str
@@ -179,7 +186,13 @@ class SubAgentSpawnedCtx:
 
 @dataclass
 class SubAgentCompletedCtx:
-    """Context for ``on_sub_agent_completed``."""
+    """Context for ``on_sub_agent_completed``.
+
+    ``agent_name`` is the child's tool label (e.g. ``summarizer``) once a
+    status delta has carried one — richer than the raw agent id the spawn
+    callback sees. Correlate with the spawn callback by ``response_id``
+    (the child session id), not by name.
+    """
 
     response_id: str
     agent_name: str
