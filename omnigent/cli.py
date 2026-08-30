@@ -7923,7 +7923,9 @@ def run(
     # ambient TRACEPARENT as this dispatch's caller trace context so the
     # spawned server/runner/harness spans join the caller's trace. Only this
     # deliberate capture propagates it — a long-lived server that merely
-    # inherited a wrapper's TRACEPARENT does not extract it.
+    # inherited a wrapper's TRACEPARENT does not extract it. On the
+    # daemon-backed path the capture is inert: _build_host_daemon_env scrubs
+    # the dispatch vars, so those runs keep response-derived traces.
     from omnigent.runtime.telemetry import capture_dispatch_trace_context
 
     capture_dispatch_trace_context()

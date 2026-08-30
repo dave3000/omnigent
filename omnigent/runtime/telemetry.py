@@ -644,8 +644,10 @@ def trace_context_for_response(
     header via the W3C TraceContext propagator to make any span started
     inside the context manager inherit this trace ID.
 
-    For root invocations pass only ``response_id``; the trace ID is
-    derived from it so direct response-ID → trace-ID lookup works.
+    For root invocations pass only ``response_id``; on the fallback
+    path the trace ID is derived from it so direct response-ID →
+    trace-ID lookup works (when a caller context applies, spans ride
+    the caller's trace ID instead, so that lookup does not).
     For sub-agent invocations pass both ``response_id`` (the
     sub-agent's own ID, exposed as ``task.id`` on the span) and
     ``root_response_id`` (the root of the spawn tree, used as the
