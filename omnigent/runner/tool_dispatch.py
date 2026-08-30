@@ -3237,16 +3237,13 @@ async def _execute_web_search_tool(
     runs its synchronous ``invoke`` off the event loop (the backend makes a
     blocking HTTP call).
 
-    ``llm_provider`` is inferred exactly as ``ToolManager._create_web_search``
-    does, so the dispatch path preserves the same invariants as session setup:
-
-    - **OpenAI models** keep the native ``web_search_preview`` passthrough; if a
-      ``web_search`` function call ever reached this path, ``invoke()`` raises
-      (its built-in fence) and the third-party backend is never run. In normal
-      operation OpenAI models never emit a ``web_search`` function call, so this
-      is defensive — but it keeps the promise rather than silently weakening it.
-    - **``databricks-*`` models** skip provider inference (they don't support
-      ``web_search_preview``) and run in function-tool mode.
+    ``llm_provider`` comes from the same helper session setup uses
+    (:func:`~omnigent.llms.routing.web_search_native_passthrough_provider`),
+    so dispatch preserves the session-setup invariants: on OpenAI
+    Responses-compatible harnesses the native ``web_search_preview``
+    passthrough is kept (``invoke()`` raises its fence if a function call
+    ever reaches this path — defensive, the provider executes server-side);
+    every other harness/model runs in function-tool mode.
 
     :param args: Parsed LLM arguments — ``query`` (required).
     :param agent_spec: Parent agent's spec; carries the web_search config + model.
@@ -3259,25 +3256,14 @@ async def _execute_web_search_tool(
     from omnigent.tools.builtins.web_search import WebSearchTool
 
     config = _web_search_config_from_spec(agent_spec)
-    # Mirror ToolManager._create_web_search's provider inference (same skip for
-    # databricks-*, same OpenAI passthrough fence) so dispatch honors session-setup invariants.
-    llm_provider: str | None = None
-    model = getattr(getattr(agent_spec, "executor", None), "model", None)
-    if model and not model.startswith("databricks-"):
-        harness = getattr(getattr(agent_spec, "executor", None), "harness_kind", None)
-        if not harness or harness == "omnigent":
-            from omnigent.llms.routing import infer_harness_from_model
+    # Same helper as ToolManager._create_web_search, so dispatch and
+    # session-setup advertisement cannot drift.
+    from omnigent.llms.routing import web_search_native_passthrough_provider
 
-            harness = infer_harness_from_model(model) or harness
-        from omnigent.harness_aliases import canonicalize_harness
-        from omnigent.onboarding.provider_config import _EXECUTOR_TYPE_HARNESS_ALIASES
-
-        canonical = canonicalize_harness(harness) or harness
-        canonical = _EXECUTOR_TYPE_HARNESS_ALIASES.get(canonical, canonical)
-        if canonical in ("openai-agents", "codex"):
-            from omnigent.llms.routing import parse_model_string
-
-            llm_provider = parse_model_string(model).provider
+    executor = getattr(agent_spec, "executor", None)
+    llm_provider = web_search_native_passthrough_provider(
+        getattr(executor, "model", None), getattr(executor, "harness_kind", None)
+    )
     tool = WebSearchTool(config=config, llm_provider=llm_provider)
     ctx = ToolContext(
         task_id=task_id or "web_search",
