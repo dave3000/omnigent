@@ -11151,6 +11151,7 @@ def test_codex_discover_thread_and_forward_writes_routing_summary_on_timeout(
             bridge_dir=bridge_dir,
             codex_ws_url="ws://127.0.0.1:9999",
             codex_home=tmp_path / "codex-home",
+            workspace=str(tmp_path / "workspace"),
             event_client=_FakeClient(),
             routing_summary="Codex CLI login (no provider configured) -- SENTINEL",
         )

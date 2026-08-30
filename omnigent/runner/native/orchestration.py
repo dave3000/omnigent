@@ -4204,6 +4204,9 @@ async def _auto_create_codex_terminal(
                 socket_path=codex_ws_url,
                 thread_id=launch_config.external_session_id,
                 codex_home=str(codex_home),
+                # The session workspace: without it the executor falls back
+                # to the runner process's own cwd when starting turns.
+                cwd=workspace,
             ),
         )
 
@@ -4303,6 +4306,7 @@ async def _auto_create_codex_terminal(
                 bridge_dir=bridge_dir,
                 codex_ws_url=codex_ws_url,
                 codex_home=codex_home,
+                workspace=workspace,
                 event_client=event_client,
                 routing_summary=_codex_launch.summary,
                 subagent_router=_codex_router,
@@ -4352,6 +4356,7 @@ async def _codex_discover_thread_and_forward(
     bridge_dir: Path,
     codex_ws_url: str,
     codex_home: Path,
+    workspace: str,
     event_client: CodexAppServerClient,
     routing_summary: str,
     subagent_router: SubagentRouter | None = None,
@@ -4374,6 +4379,9 @@ async def _codex_discover_thread_and_forward(
         app-server) and re-persisted by the forwarder's thread-rotation
         path so a native ``/clear`` keeps the ws:// transport.
     :param codex_home: Per-session private ``CODEX_HOME`` path.
+    :param workspace: The session workspace directory, persisted as the
+        bridge state's ``cwd`` so web-driven turns run shell tools there
+        instead of the runner process's working directory.
     :param event_client: Connected app-server listener that will observe the
         TUI's ``thread/started``; reused to subscribe the forwarder.
     :param routing_summary: One-line description of the resolved launch
@@ -4433,6 +4441,9 @@ async def _codex_discover_thread_and_forward(
                 socket_path=codex_ws_url,
                 thread_id=thread_id,
                 codex_home=str(codex_home),
+                # The session workspace: without it the executor falls back
+                # to the runner process's own cwd when starting turns.
+                cwd=workspace,
             ),
         )
 
