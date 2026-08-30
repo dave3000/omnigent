@@ -76,6 +76,24 @@ _LOOPBACK_NO_PROXY = "localhost,127.0.0.1"
 pytestmark = [pytest.mark.timeout(600, method="signal")]
 
 
+def _ambient_free_environ() -> dict[str, str]:
+    """Return ``os.environ`` minus ambient runner/host identity variables.
+
+    When the test itself runs inside an omnigent runner (an agent session),
+    the parent process leaks ``OMNIGENT_RUNNER_*`` / ``OMNIGENT_HOST_*`` vars
+    that make the dedicated stack's subprocesses bind to the *outer* server
+    instead of this test's own. Strip them so the stack is hermetic.
+
+    :returns: A copy of the environment safe to base subprocess envs on.
+    """
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(("OMNIGENT_RUNNER_", "OMNIGENT_HOST_"))
+        and k not in ("RUNNER_SERVER_URL", "OMNIGENT_REMOTE_AUTH_TOKEN")
+    }
+
+
 def _merged_no_proxy(env: dict[str, str]) -> str:
     """Return the env's NO_PROXY extended with loopback hosts.
 
@@ -120,7 +138,7 @@ class _WakeLossStack:
 
     def _server_env(self) -> dict[str, str]:
         env = {
-            **os.environ,
+            **_ambient_free_environ(),
             "OPENAI_API_KEY": "mock-key",
             "OPENAI_BASE_URL": self._mock_base,
             "OMNIGENT_RUNNER_TUNNEL_TOKEN": self._binding_token,
