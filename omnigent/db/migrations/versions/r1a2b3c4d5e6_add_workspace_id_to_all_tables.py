@@ -28,6 +28,7 @@ guard the rebuilds with ``PRAGMA foreign_keys`` on SQLite.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import warnings
 from collections.abc import Iterator, Sequence
 
@@ -100,8 +101,10 @@ def _detach_fks_bound_to_widened_pks(tables: Sequence[str]) -> list[tuple[str, s
                 "     AND att.attnum = ord.attnum) AS ref_cols_key"
                 " FROM pg_constraint con"
                 " JOIN pg_class ref ON ref.oid = con.confrelid"
+                " JOIN pg_namespace nsp ON nsp.oid = ref.relnamespace"
                 " JOIN pg_index idx ON idx.indexrelid = con.conindid"
                 " WHERE con.contype = 'f' AND idx.indisprimary"
+                " AND nsp.nspname = current_schema()"
                 " AND ref.relname = ANY(:tables)"
                 " ORDER BY con.conname"
             ).bindparams(sa.bindparam("tables", list(tables), type_=sa.ARRAY(sa.Text)))
@@ -119,7 +122,9 @@ def _detach_fks_bound_to_widened_pks(tables: Sequence[str]) -> list[tuple[str, s
             sa.text(
                 "SELECT 1 FROM pg_constraint u"
                 " JOIN pg_class rel ON rel.oid = u.conrelid"
+                " JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace"
                 " WHERE u.contype = 'u'"
+                " AND nsp.nspname = current_schema()"
                 " AND rel.relname = :parent"
                 " AND (SELECT string_agg(att.attname, '_' ORDER BY ord.n)"
                 "        FROM unnest(u.conkey) WITH ORDINALITY AS ord(attnum, n)"
@@ -130,11 +135,14 @@ def _detach_fks_bound_to_widened_pks(tables: Sequence[str]) -> list[tuple[str, s
             {"parent": parent, "cols_key": cols_key},
         ).first()
         if existing is None:
+            # Stay under PostgreSQL's 63-byte identifier limit: a long
+            # table/column combination would otherwise truncate silently.
+            uq_name = f"uq_{parent}_{cols_key}"
+            if len(uq_name) > 63:
+                digest = hashlib.sha256(uq_name.encode()).hexdigest()[:10]
+                uq_name = f"uq_{parent[:44]}_{digest}"
             op.execute(
-                sa.text(
-                    f'ALTER TABLE "{parent}" ADD CONSTRAINT'
-                    f' "uq_{parent}_{cols_key}" UNIQUE ({ref_cols})'
-                )
+                sa.text(f'ALTER TABLE "{parent}" ADD CONSTRAINT "{uq_name}" UNIQUE ({ref_cols})')
             )
     detached: list[tuple[str, str, str]] = []
     for fk in fks:
