@@ -722,6 +722,9 @@ def _usage_from_observed_call(
     ctx_in = last_call_usage.get("input_tokens") or 0
     ctx_cc = last_call_usage.get("cache_creation_input_tokens") or 0
     ctx_cr = last_call_usage.get("cache_read_input_tokens") or 0
+    # ``total_tokens`` is billing-shaped (non-cache input only, no output on
+    # an incomplete turn); ``context_tokens`` is window fill, so it includes
+    # the cache buckets. The two intentionally differ.
     return {
         "input_tokens": ctx_in,
         "output_tokens": 0,
