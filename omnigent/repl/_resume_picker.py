@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Protocol, TextIO
 
 if TYPE_CHECKING:
     from omnigent_client import OmnigentClient
+    from omnigent_client._sessions import SessionListItem
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.key_binding.key_processor import KeyPressEvent
     from prompt_toolkit.styles import Style
@@ -905,8 +906,12 @@ def _page_start_for_selection(selected_index: int) -> int:
 
 async def _list_sessions_with_retry(
     client: OmnigentClient,
-    **list_kwargs: object,
-) -> Sequence[_ConversationRow]:
+    *,
+    limit: int = 200,
+    agent_id: str | None = None,
+    agent_name: str | None = None,
+    order: str = "desc",
+) -> list[SessionListItem]:
     """Call ``client.sessions.list`` with bounded retries on 429.
 
     A transient rate-limit on the picker's single list call should not
@@ -917,7 +922,10 @@ async def _list_sessions_with_retry(
     is worth waiting out.
 
     :param client: SDK client whose ``sessions.list`` to call.
-    :param list_kwargs: Keyword arguments forwarded to ``list``.
+    :param limit: Maximum number of session rows to fetch.
+    :param agent_id: Scope to this agent; ``None`` lists across agents.
+    :param agent_name: Scope to sessions whose bound agent has this name.
+    :param order: Sort order forwarded to ``list``.
     :returns: The session rows.
     :raises omnigent_client.RateLimitedError: When every attempt was
         rate-limited.
@@ -926,10 +934,14 @@ async def _list_sessions_with_retry(
 
     for delay_s in _SESSION_LIST_RETRY_DELAYS_S:
         try:
-            return await client.sessions.list(**list_kwargs)
+            return await client.sessions.list(
+                limit=limit, agent_id=agent_id, agent_name=agent_name, order=order
+            )
         except RateLimitedError:
             await asyncio.sleep(delay_s)
-    return await client.sessions.list(**list_kwargs)
+    return await client.sessions.list(
+        limit=limit, agent_id=agent_id, agent_name=agent_name, order=order
+    )
 
 
 async def pick_conversation_from_sdk(

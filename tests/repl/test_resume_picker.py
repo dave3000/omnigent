@@ -991,6 +991,7 @@ async def test_cross_agent_picker_lists_without_agent_id_filter() -> None:
     assert client.sessions.last_kwargs == {
         "limit": 200,
         "agent_id": None,
+        "agent_name": None,
         "order": "desc",
     }
 
@@ -1070,6 +1071,7 @@ async def test_wrapper_label_picker_filters_and_lists_without_agent_filter(
     assert client.sessions.last_kwargs == {
         "limit": 200,
         "agent_id": None,
+        "agent_name": None,
         "order": "desc",
     }
     rendered = out.getvalue()
