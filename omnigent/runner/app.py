@@ -1816,6 +1816,34 @@ def _deliver_subagent_completion(entry: _SubagentWorkEntry) -> _SubagentDelivery
     )
 
 
+def redeliver_undelivered_subagent_work(parent_session_id: str) -> int:
+    """
+    Re-push any terminal-but-undelivered sub-agent completions to the parent.
+
+    Call this right after a parent's in-memory inbox is (re)established on a
+    turn reattach: a child that went terminal while the inbox was missing has
+    a durable work entry with ``delivered=False`` (see
+    :func:`_deliver_subagent_completion`, which returns
+    ``MISSING_PARENT_INBOX`` and leaves the flag unset when the inbox is gone),
+    and nothing else re-drives it once no further child status event will
+    arrive. Delivery is exactly-once: ``_deliver_subagent_completion`` is a
+    no-op for an entry already ``delivered``, so an entry already sitting in
+    the queue is never duplicated.
+
+    :param parent_session_id: Parent session id whose undelivered terminal
+        work should be re-driven, e.g. ``"conv_parent123"``.
+    :returns: Count of completions delivered by this call (0 when none were
+        pending).
+    """
+    delivered = 0
+    for entry in list_subagent_work(parent_session_id):
+        if entry.status in _SUBAGENT_TERMINAL_STATUSES and not entry.delivered:
+            ack = _deliver_subagent_completion(entry)
+            if ack.delivered_now:
+                delivered += 1
+    return delivered
+
+
 async def _wake_retry_sleep(seconds: float) -> None:
     """
     Sleep between sub-agent wake-POST retries.
@@ -3250,6 +3278,41 @@ def create_runner_app(
             title=" ".join(title.split()),
         )
 
+    def _ensure_session_runtime_maps(session_id: str) -> bool:
+        """
+        Idempotently register a session's in-memory event queue, inbox, and
+        async-task registry.
+
+        These three maps are otherwise created only here-via-``_initialize_session``
+        (the ``POST /v1/sessions`` path). A turn reattached through
+        ``POST /v1/sessions/{id}/events`` rebinds durable history and a fresh
+        turn slot but never re-runs that init, so on a runner whose
+        process-wide maps lack the key (a fresh runner, or after a prior
+        ``delete_session`` pop) the parent inbox and async-task registry are
+        missing and ``sys_session_send`` / ``sys_call_async`` fail while
+        ``sys_read_inbox`` silently reads an empty (absent) queue. Calling this
+        on the reattach path restores them.
+
+        Registration is keyed strictly by ``session_id`` — never a shared or
+        global inbox — and an existing queue is preserved, so already-queued
+        completions are never dropped. The ``not in`` / ``get is None`` checks
+        run without an intervening ``await``, so concurrent reattach coroutines
+        cannot both create (idempotent under concurrent reattachment).
+
+        :param session_id: Session/conversation id to register maps for.
+        :returns: ``True`` if the inbox was newly created (was absent), so the
+            caller can re-drive undelivered sub-agent completions; ``False``
+            when an inbox already existed.
+        """
+        if session_id not in _session_event_queues:
+            _session_event_queues[session_id] = asyncio.Queue()
+        inbox_created = session_id not in _session_inboxes
+        if inbox_created:
+            _session_inboxes[session_id] = asyncio.Queue()
+        if session_id not in _session_async_tasks:
+            _session_async_tasks[session_id] = {}
+        return inbox_created
+
     async def _initialize_session(body: _JsonObject) -> JSONResponse:
         if process_manager is None:
             return JSONResponse(
@@ -3416,12 +3479,10 @@ def create_runner_app(
 
         _session_start_cache.setdefault(session_id, time.time())
         _session_agent_ids[session_id] = agent_id
-        if session_id not in _session_event_queues:
-            _session_event_queues[session_id] = asyncio.Queue()
-        if session_id not in _session_inboxes:
-            _session_inboxes[session_id] = asyncio.Queue()
-        if session_id not in _session_async_tasks:
-            _session_async_tasks[session_id] = {}
+        if _ensure_session_runtime_maps(session_id):
+            # Fresh runner reconnecting to a session whose children already
+            # completed: re-push their undelivered completions (exactly once).
+            redeliver_undelivered_subagent_work(session_id)
         raw_sub_agent_name = body.get("sub_agent_name")
         _sa_name = cast(str | None, raw_sub_agent_name)
         if _sa_name:
@@ -7993,6 +8054,15 @@ def create_runner_app(
                     )
                     loaded.append(new_item)
                     _session_histories[conversation_id] = loaded
+
+                # A turn reattached here never passes through _initialize_session,
+                # so restore the in-memory inbox / async-task maps that dispatch
+                # (sys_session_send, sys_call_async) needs; without this they are
+                # absent after a reattach even though durable history and inbox
+                # reads still resolve. Re-drive undelivered child completions only
+                # when the inbox was actually missing, so nothing is duplicated.
+                if _ensure_session_runtime_maps(conversation_id):
+                    redeliver_undelivered_subagent_work(conversation_id)
 
                 _begin_turn_slot(conversation_id)
                 _logger.info(

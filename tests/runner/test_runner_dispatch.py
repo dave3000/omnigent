@@ -10596,3 +10596,239 @@ def test_response_failed_event_llm_source_is_preserved() -> None:
     )
     payload = _json.loads(raw.decode().split("data: ", 1)[1])
     assert payload["source"] == "llm"
+# ── Reattach inbox restoration (issue: parent inbox lost on turn reattach) ────
+
+
+@pytest.mark.asyncio
+async def test_reattach_restores_parent_inbox_and_redelivers_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    An async-enabled parent recovers dispatch after its in-memory inbox is lost.
+
+    Reproduces the production lifecycle: a turn reattached via
+    ``POST /v1/sessions/{id}/events`` never re-runs ``_initialize_session``, so
+    the in-memory ``_session_inboxes`` / ``_session_async_tasks`` maps are
+    absent even though the durable inbox and sub-agent work entries persist.
+
+    The reported symptom set is asserted first, then the restore step
+    (mirroring ``_ensure_session_runtime_maps`` on the reattach route) plus
+    :func:`redeliver_undelivered_subagent_work` is shown to heal dispatch and
+    deliver the completed child exactly once.
+
+    Covers scenarios: dispatch a child (1), inbox read (3), continue/create a
+    child after reattach (4, 5), async dispatch guard (6), idempotent restore
+    (7), and queued completions surviving reattach exactly once (9).
+    """
+    from omnigent.runner import app as runner_app
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    monkeypatch.setattr(runner_app, "get_session_agent_id", lambda _sid: "ag_parent")
+    monkeypatch.setattr(runner_app, "register_child_session", lambda *a, **k: None)
+
+    parent_id = "conv_reattach_parent"
+    child_id = "conv_reattach_child"
+    parent_inbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        """Serve child create / lookup / events / policy for this parent."""
+        path = request.url.path
+        if request.method == "GET" and path == f"/v1/sessions/{parent_id}/child_sessions":
+            return httpx.Response(200, json={"data": []})
+        if request.method == "POST" and path == "/v1/sessions":
+            return httpx.Response(201, json={"id": child_id})
+        if request.method == "POST" and path == f"/v1/sessions/{child_id}/events":
+            return httpx.Response(202, json={"queued": True})
+        if request.method == "POST" and path == f"/v1/sessions/{parent_id}/policies/evaluate":
+            return httpx.Response(200, json={"result": "POLICY_ACTION_UNSPECIFIED"})
+        return httpx.Response(404, json={"error": str(request.url)})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    ) as server_client:
+        try:
+            # 1. Dispatch a child. sys_session_send registers the parent inbox
+            #    into the module-global ref and records the child work entry.
+            send = await execute_tool(
+                tool_name="sys_session_send",
+                arguments=json.dumps(
+                    {"agent": "worker", "title": "phase-a", "args": "run phase a"}
+                ),
+                server_client=server_client,
+                conversation_id=parent_id,
+                agent_spec=SimpleNamespace(sub_agents=[SimpleNamespace(name="worker")]),
+                session_inbox=parent_inbox,
+            )
+            assert json.loads(send)["status"] == "launching"
+            assert runner_app._session_inboxes_ref.get(parent_id) is parent_inbox
+
+            # The child completes while the parent turn is between turns.
+            ack = runner_app.mark_subagent_work_terminal(
+                child_id, status="completed", output="CHILD_MARKER"
+            )
+            assert ack.delivered_now  # inbox present → delivered immediately
+            # Drain it so the queue is empty, like a parent that already read it.
+            assert not parent_inbox.empty()
+            parent_inbox.get_nowait()
+
+            # A SECOND child completes, but now simulate the reattach: the
+            # in-memory inbox registration is gone before this completion lands.
+            send2 = await execute_tool(
+                tool_name="sys_session_send",
+                arguments=json.dumps(
+                    {"agent": "worker", "title": "phase-b", "args": "run phase b"}
+                ),
+                server_client=server_client,
+                conversation_id=parent_id,
+                agent_spec=SimpleNamespace(sub_agents=[SimpleNamespace(name="worker")]),
+                session_inbox=parent_inbox,
+            )
+            assert json.loads(send2)["status"] == "launching"
+
+            # 2. Reattach loss: the process-wide inbox map no longer has the key.
+            runner_app._session_inboxes_ref.pop(parent_id, None)
+
+            # This completion cannot be delivered — durable entry stays undelivered.
+            miss = runner_app.mark_subagent_work_terminal(
+                child_id, status="completed", output="CHILD_MARKER_2"
+            )
+            assert not miss.delivered_now
+            assert not miss.delivered
+
+            # --- The reported production symptom set, post-reattach ---
+            # sys_read_inbox softly reports empty (inbox is None on this turn).
+            read_absent = await execute_tool(
+                tool_name="sys_read_inbox",
+                arguments="{}",
+                server_client=server_client,
+                conversation_id=parent_id,
+                session_inbox=None,
+            )
+            assert read_absent == "Inbox is empty — no completed tasks."
+            # sys_session_send hard-fails: parent not in the inbox ref.
+            send_absent = await execute_tool(
+                tool_name="sys_session_send",
+                arguments=json.dumps({"agent": "worker", "title": "x", "args": "x"}),
+                server_client=server_client,
+                conversation_id=parent_id,
+                agent_spec=SimpleNamespace(sub_agents=[SimpleNamespace(name="worker")]),
+                session_inbox=None,
+            )
+            assert send_absent == "Error: sys_session_send requires parent session inbox"
+            # sys_call_async hard-fails: no inbox / async-task registry.
+            call_absent = await execute_tool(
+                tool_name="sys_call_async",
+                arguments=json.dumps({"tool": "sys_os_shell", "args": "{}"}),
+                server_client=server_client,
+                conversation_id=parent_id,
+                session_inbox=None,
+                session_async_tasks=None,
+            )
+            assert call_absent == "Error: async inbox not initialized for this session"
+
+            # --- Restore (what _ensure_session_runtime_maps does on reattach) ---
+            restored_inbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+            runner_app._session_inboxes_ref[parent_id] = restored_inbox
+            restored_async_tasks: dict[str, Any] = {}
+
+            # 9. Re-drive the undelivered completion — exactly once.
+            first = runner_app.redeliver_undelivered_subagent_work(parent_id)
+            assert first == 1
+            second = runner_app.redeliver_undelivered_subagent_work(parent_id)
+            assert second == 0  # idempotent: already delivered, no duplicate
+            assert restored_inbox.qsize() == 1
+
+            # 3 & 4. sys_read_inbox now drains the recovered completion once.
+            read_after = await execute_tool(
+                tool_name="sys_read_inbox",
+                arguments="{}",
+                server_client=server_client,
+                conversation_id=parent_id,
+                session_inbox=restored_inbox,
+            )
+            assert "CHILD_MARKER_2" in read_after
+            assert restored_inbox.empty()
+
+            # 5 & 6. Dispatch works again after restore (send + async guard pass).
+            send_ok = await execute_tool(
+                tool_name="sys_session_send",
+                arguments=json.dumps(
+                    {"agent": "worker", "title": "phase-c", "args": "run phase c"}
+                ),
+                server_client=server_client,
+                conversation_id=parent_id,
+                agent_spec=SimpleNamespace(sub_agents=[SimpleNamespace(name="worker")]),
+                session_inbox=restored_inbox,
+            )
+            assert json.loads(send_ok)["status"] == "launching"
+            call_ok = await execute_tool(
+                tool_name="sys_call_async",
+                arguments=json.dumps({"tool": "sys_os_shell", "args": "{}"}),
+                server_client=server_client,
+                conversation_id=parent_id,
+                session_inbox=restored_inbox,
+                session_async_tasks=restored_async_tasks,
+            )
+            assert call_ok != "Error: async inbox not initialized for this session"
+            assert "handle_id" in call_ok
+        finally:
+            # Reap any async task the sys_call_async spawned before teardown.
+            for _task, _evt in restored_async_tasks.values():
+                _task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await _task
+            runner_app.unregister_subagent_work(child_id)
+            runner_app._session_inboxes_ref.pop(parent_id, None)
+
+
+@pytest.mark.asyncio
+async def test_redeliver_undelivered_subagent_work_isolates_parents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Re-driving one parent's undelivered work never touches another parent.
+
+    Guards scenario 8 (user isolation): a reattached parent's redelivery sweep
+    is keyed by ``parent_session_id`` and must not deliver into, or read from,
+    any other parent's inbox or work entries.
+    """
+    from omnigent.runner import app as runner_app
+
+    parent_a = "conv_iso_parent_a"
+    parent_b = "conv_iso_parent_b"
+    child_a = "conv_iso_child_a"
+    child_b = "conv_iso_child_b"
+    inbox_a: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    inbox_b: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    monkeypatch.setattr(runner_app, "get_session_agent_id", lambda _sid: "ag_parent")
+
+    try:
+        # Both parents have an undelivered terminal child (inbox absent at
+        # completion time), registered against their own parent id.
+        runner_app.register_subagent_work(
+            parent_session_id=parent_a, child_session_id=child_a, agent="worker", title="a"
+        )
+        runner_app.register_subagent_work(
+            parent_session_id=parent_b, child_session_id=child_b, agent="worker", title="b"
+        )
+        runner_app.mark_subagent_work_terminal(child_a, status="completed", output="A_OUT")
+        runner_app.mark_subagent_work_terminal(child_b, status="completed", output="B_OUT")
+
+        # Only parent A's inbox is restored, and only A is re-driven.
+        runner_app._session_inboxes_ref[parent_a] = inbox_a
+        runner_app._session_inboxes_ref[parent_b] = inbox_b
+        delivered_a = runner_app.redeliver_undelivered_subagent_work(parent_a)
+
+        assert delivered_a == 1
+        assert inbox_a.qsize() == 1
+        # Parent B untouched: its inbox stays empty, its work stays undelivered.
+        assert inbox_b.empty()
+        b_entry = runner_app._subagent_work_by_child.get(child_b)
+        assert b_entry is not None and not b_entry.delivered
+    finally:
+        runner_app.unregister_subagent_work(child_a)
+        runner_app.unregister_subagent_work(child_b)
+        runner_app._session_inboxes_ref.pop(parent_a, None)
+        runner_app._session_inboxes_ref.pop(parent_b, None)
