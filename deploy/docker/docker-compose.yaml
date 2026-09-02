@@ -141,6 +141,22 @@ services:
       OMNIGENT_ACCOUNTS_BASE_URL: "${OMNIGENT_ACCOUNTS_BASE_URL:-}"
       OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD: "${OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD:-}"
       OMNIGENT_ACCOUNTS_SESSION_TTL_HOURS: "${OMNIGENT_ACCOUNTS_SESSION_TTL_HOURS:-8}"
+      # Added 2026-08-31 for tailnet access. deploy/tailscale/README.md
+      # requires this variable, but the shipped compose file never passed
+      # it through, so setting it in .env alone had no effect. Without it a
+      # browser on another tailnet device gets WebSocket close code 4403 and
+      # HTTP 403 on chat and uploads.
+      OMNIGENT_WS_ALLOWED_ORIGINS: "${OMNIGENT_WS_ALLOWED_ORIGINS:-}"
+      # Locally authored agents seeded as built-ins at startup. Colon-separated
+      # list; each entry is ONE agent — a single-file spec (name = file stem) or
+      # a bundle directory (name = directory name). Paths are inside the
+      # container, resolved through the /agents bind mount above.
+      OMNIGENT_BUILTIN_AGENT_DIRS: "${OMNIGENT_BUILTIN_AGENT_DIRS:-}"
+      # Non-secret server config file (policy_modules, admins, …) and the
+      # import path for locally authored policy modules. Both point into the
+      # /agents bind mount and are exported by that repo's ops/omnigent-up.sh.
+      OMNIGENT_CONFIG: "${OMNIGENT_CONFIG:-}"
+      PYTHONPATH: "${OMNIGENT_PYTHONPATH:-}"
       OMNIGENT_ACCOUNTS_INVITE_TTL_HOURS: "${OMNIGENT_ACCOUNTS_INVITE_TTL_HOURS:-72}"
       OMNIGENT_ACCOUNTS_MAGIC_TTL_MINUTES: "${OMNIGENT_ACCOUNTS_MAGIC_TTL_MINUTES:-10}"
       # Browser auto-open is a no-op inside the container (no
@@ -151,6 +167,21 @@ services:
       OMNIGENT_ACCOUNTS_AUTO_OPEN: "${OMNIGENT_ACCOUNTS_AUTO_OPEN:-0}"
     volumes:
       - artifact-data:/data
+      # Every locally authored agent bundle lives in ONE git repo, mounted
+      # ONCE, read-only. Nothing else on the host is exposed to the server.
+      # The repo is github.com/itsbusinesstime/itsbusinesstime-omnigent, so
+      # agent edits are version-tracked and pushable.
+      #
+      # Adding an agent needs NO compose change: create its directory in that
+      # repo and append the container path to OMNIGENT_BUILTIN_AGENT_DIRS in
+      # .env, then restart the server.
+      #
+      # Mount the repo DIRECTLY — no symlink hop. The bundles used to sit in
+      # /home/dev/agents with /home/dev/repos/mason symlinked at them; both
+      # links were read by nothing and are gone. Keep it this way: a symlink
+      # inside a bind mount whose target lies outside the mount cannot
+      # resolve in the container and would appear broken.
+      - /home/dev/repos/itsbusinesstime-omnigent:/agents:ro
     ports:
       - "${OMNIGENT_PORT:-8000}:8000"
 
